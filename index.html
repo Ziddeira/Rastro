@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Rastro — corra, pinte, conquiste</title>
+<link rel="icon" type="image/svg+xml" href="marca/icone.svg">
+<link rel="apple-touch-icon" href="marca/icone-loja.png">
+<meta name="theme-color" content="#0E1116">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0f1115;--card:rgba(18,20,26,.92);--txt:#f2f2f2;--muted:#9aa0aa;--team:#1e88e5}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font-family:Inter,system-ui,sans-serif}
+  #map{position:fixed;inset:0}
+  .top{position:fixed;top:0;left:0;right:0;z-index:1000;padding:calc(env(safe-area-inset-top) + 10px) 10px 0}
+  .score{display:flex;gap:6px}
+  .score div{flex:1;background:var(--card);border-radius:10px;padding:6px 4px;text-align:center;font-size:12px;border-bottom:4px solid}
+  .score b{display:block;font-size:14px}
+  .score .me{outline:2px solid #fff}
+  .status{margin-top:8px;background:var(--card);border-radius:10px;padding:8px 12px;font-size:13px;min-height:36px}
+  .status.err{background:#5b1a1a}.status.ok{background:#174d24}
+  .bottom{position:fixed;left:0;right:0;bottom:0;z-index:1000;padding:0 10px calc(env(safe-area-inset-bottom) + 12px)}
+  .live{display:flex;gap:6px;margin-bottom:8px}
+  .live div{flex:1;background:var(--card);border-radius:10px;padding:6px;text-align:center;font-size:11px;color:var(--muted)}
+  .live b{display:block;color:var(--txt);font-size:16px}
+  .row{display:flex;gap:6px;margin-bottom:6px}
+  button{flex:1;border:0;border-radius:12px;padding:13px 8px;font:600 14px Inter,sans-serif;color:#fff;background:#2a2e38}
+  button.main{background:var(--team);color:#111;font-weight:800;font-size:16px}
+  button.on{outline:2px solid #fff}
+  .sim{display:none}.simmode .sim{display:flex}
+  .modal{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;padding:20px}
+  .modal .box{background:#0E1116;border-radius:16px;padding:20px;max-width:380px;width:100%}
+  .modal h2{margin:0 0 6px}.modal p{color:var(--muted);font-size:14px;margin:0 0 14px}
+  .teams{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .teams button{padding:22px 8px;font-size:16px;color:#111;font-weight:800}
+  .hidden{display:none!important}
+  .rules{font-size:13px;color:var(--muted);line-height:1.5}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="top">
+  <div class="score" id="score"></div>
+  <div class="status" id="status">Escolha seu time para começar.</div>
+</div>
+
+<div class="bottom">
+  <div class="live">
+    <div>Percurso<b id="lDist">0 m</b></div>
+    <div>Área do circuito<b id="lArea">0 m²</b></div>
+    <div>Velocidade<b id="lSpeed">–</b></div>
+  </div>
+  <div class="row sim">
+    <button id="bSimTeam">Jogar como outro time</button>
+    <button id="bDay">Avançar 1 dia</button>
+  </div>
+  <div class="row">
+    <button id="bMode">Modo simulação</button>
+    <button id="bCancel">Cancelar volta</button>
+    <button id="bInfo">Regras</button>
+  </div>
+  <div class="row"><button class="main" id="bMain">Iniciar corrida (GPS)</button></div>
+</div>
+
+<div class="modal" id="mTeam">
+  <div class="box">
+    <img src="marca/logo-escuro.svg" alt="Rastro" style="width:100%;display:block;margin:-10px 0 4px">
+    <h2>Escolha seu time</h2>
+    <p>Cada área que você contornar fica com a cor do seu time.</p>
+    <div class="teams" id="teamBtns"></div>
+  </div>
+</div>
+
+<div class="modal hidden" id="mInfo">
+  <div class="box rules">
+    <h2 style="color:#fff">Regras do protótipo</h2>
+    <p class="rules">
+    • Comece a correr e volte até <b>30 m do ponto de partida</b>: a área dentro do percurso vira do seu time.<br>
+    • Limite: <b id="rMax"></b> por circuito (um quarteirão). Maior que isso não conta.<br>
+    • Você toma <b>só a parte que contornou</b> das áreas dos outros times.<br>
+    • Acima de <b id="rSpeed"></b> a volta é anulada (antitrapaça).<br>
+    • Cada área expira em <b id="rExp"></b> se o time não passar por lá de novo.<br>
+    • <b>Modo simulação:</b> toque no mapa para "andar" ponto a ponto e toque perto do início para fechar.</p>
+    <button id="bCloseInfo">Entendi</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+<script>
+// ===== Regras (fácil de ajustar) =====
+const RULES = {
+  maxArea: 10000,        // m² — ~um quarteirão de 100 m x 100 m
+  maxSpeedKmh: 25,       // acima disso a volta é anulada
+  closeRadius: 30,       // m — distância do início para fechar o circuito
+  minLoopLength: 120,    // m — percurso mínimo para valer
+  expireDays: 7,         // dias até a área sumir
+  gpsMaxAccuracy: 35,    // m — ignora leituras de GPS piores que isso
+  minStep: 5             // m — distância mínima entre pontos gravados
+};
+const TEAMS = {
+  vermelho:{name:'Vermelho',color:'#E53935'},
+  amarelo:{name:'Amarelo',color:'#F9B800'},
+  azul:{name:'Azul',color:'#1E88E5'},
+  verde:{name:'Verde',color:'#43A047'}
+};
+const DAY = 86400000;
+const START = [-27.6455, -48.6697]; // Palhoça/SC
+
+// ===== Estado =====
+const store = {
+  get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}},
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+};
+let state = store.get('rastro_v1', {team:null, pieces:[], clockOffset:0});
+// piece = {team, geom (GeoJSON Polygon|MultiPolygon), t (ms)}
+let playTeam = state.team;
+let sim = false, running = false, watchId = null;
+let path = [];      // [{lat,lng,t}]
+let lastFix = null;
+const now = () => Date.now() + (state.clockOffset||0);
+const save = () => store.set('rastro_v1', state);
+
+// ===== Mapa =====
+const map = L.map('map',{zoomControl:false,attributionControl:true}).setView(START,16);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const terrLayer = L.layerGroup().addTo(map);
+const pathLine = L.polyline([], {color:'#fff',weight:4,dashArray:'6 6'}).addTo(map);
+const startMark = L.circle(START,{radius:RULES.closeRadius,color:'#fff',weight:2,fillOpacity:.1}).addTo(map);
+startMark.setStyle({opacity:0,fillOpacity:0});
+const meMark = L.circleMarker(START,{radius:8,color:'#fff',weight:3,fillOpacity:1}).addTo(map);
+
+// ===== UI helpers =====
+const $ = id => document.getElementById(id);
+function status(msg, kind){ const s=$('status'); s.textContent=msg; s.className='status'+(kind?' '+kind:''); }
+const fmtArea = a => a>=10000 ? (a/10000).toFixed(2).replace('.',',')+' ha' : Math.round(a).toLocaleString('pt-BR')+' m²';
+const fmtDist = d => d>=1000 ? (d/1000).toFixed(2).replace('.',',')+' km' : Math.round(d)+' m';
+
+function setTeamColor(){
+  const c = TEAMS[playTeam]?.color || '#888';
+  document.documentElement.style.setProperty('--team', c);
+  meMark.setStyle({fillColor:c});
+}
+
+// ===== Território =====
+function expire(){
+  const lim = now() - RULES.expireDays*DAY;
+  const before = state.pieces.length;
+  state.pieces = state.pieces.filter(p => p.t >= lim);
+  return before - state.pieces.length;
+}
+function render(){
+  terrLayer.clearLayers();
+  for(const p of state.pieces){
+    const age = (now()-p.t)/(RULES.expireDays*DAY);
+    const c = TEAMS[p.team].color;
+    L.geoJSON(p.geom,{style:{color:c,weight:2,fillColor:c,fillOpacity:Math.max(.15,.55*(1-age))}})
+      .bindPopup(`Time ${TEAMS[p.team].name}<br>${fmtArea(turf.area(p.geom))}<br>Expira em ${Math.max(0,Math.ceil(RULES.expireDays-(now()-p.t)/DAY))} dia(s)`)
+      .addTo(terrLayer);
+  }
+  renderScore();
+}
+function renderScore(){
+  const tot = {vermelho:0,amarelo:0,azul:0,verde:0};
+  for(const p of state.pieces) tot[p.team]+=turf.area(p.geom);
+  $('score').innerHTML = Object.entries(TEAMS).map(([k,t]) =>
+    `<div class="${k===playTeam?'me':''}" style="border-color:${t.color}">${t.name}<b>${fmtArea(tot[k])}</b></div>`).join('');
+}
+
+// Junta polígonos auto-cruzados (o GPS faz isso o tempo todo)
+function loopToPolygon(pts){
+  const ring = pts.map(p=>[p.lng,p.lat]); ring.push(ring[0]);
+  let poly = turf.polygon([ring]);
+  if(turf.kinks(poly).features.length){
+    const parts = turf.unkinkPolygon(poly).features;
+    poly = parts.reduce((acc,f)=> acc ? (turf.union(acc,f)||acc) : f, null);
+  }
+  return poly;
+}
+
+function capture(pts, team){
+  if(pts.length < 4) return fail('Circuito curto demais.');
+  const len = pathLength(pts);
+  if(len < RULES.minLoopLength) return fail(`Percurso de ${fmtDist(len)} — mínimo ${RULES.minLoopLength} m.`);
+  let poly;
+  try{ poly = loopToPolygon(pts); }catch(e){ return fail('Não deu para formar uma área com esse percurso.'); }
+  if(!poly) return fail('Não deu para formar uma área com esse percurso.');
+  const area = turf.area(poly);
+  if(area < 50) return fail('Área quase zero — contorne um espaço de verdade.');
+  if(area > RULES.maxArea) return fail(`Área de ${fmtArea(area)} passa do limite de ${fmtArea(RULES.maxArea)}. Contorne algo menor.`);
+
+  // Toma só a parte contornada: recorta o circuito de todas as áreas existentes
+  let stolen = 0; const next = [];
+  for(const p of state.pieces){
+    let rest = null;
+    try{ rest = turf.difference(turf.feature(p.geom), poly); }catch(e){ rest = turf.feature(p.geom); }
+    const lost = turf.area(p.geom) - (rest ? turf.area(rest) : 0);
+    if(p.team !== team) stolen += lost;
+    if(rest && turf.area(rest) > 1) next.push({team:p.team, geom:rest.geometry, t:p.t});
+  }
+  next.push({team, geom:poly.geometry, t:now()});
+  state.pieces = next; save(); render();
+  const msg = `+${fmtArea(area)} para o ${TEAMS[team].name}` + (stolen>1 ? ` — ${fmtArea(stolen)} tomados de rivais!` : '');
+  status(msg,'ok');
+  return true;
+}
+function fail(msg){ status(msg,'err'); return false; }
+
+// ===== Percurso =====
+function dist(a,b){ return turf.distance([a.lng,a.lat],[b.lng,b.lat],{units:'meters'}); }
+function pathLength(pts){ let d=0; for(let i=1;i<pts.length;i++) d+=dist(pts[i-1],pts[i]); return d; }
+function liveArea(){
+  if(path.length<3) return 0;
+  try{ return turf.area(loopToPolygon(path)); }catch(e){ return 0; }
+}
+function updateLive(speed){
+  $('lDist').textContent = fmtDist(pathLength(path));
+  const a = liveArea();
+  $('lArea').textContent = fmtArea(a);
+  $('lArea').style.color = a>RULES.maxArea ? '#ff6b6b' : '';
+  if(speed!==undefined) $('lSpeed').textContent = speed===null ? '–' : speed.toFixed(1).replace('.',',')+' km/h';
+  pathLine.setLatLngs(path.map(p=>[p.lat,p.lng]));
+}
+function resetLoop(){
+  path=[]; pathLine.setLatLngs([]); startMark.setStyle({opacity:0,fillOpacity:0}); updateLive(null);
+}
+
+// Recebe um ponto (do GPS ou da simulação). Retorna true se fechou o circuito.
+function addPoint(pt){
+  meMark.setLatLng([pt.lat,pt.lng]);
+  if(!path.length){
+    path.push(pt); startMark.setLatLng([pt.lat,pt.lng]).setStyle({opacity:1,fillOpacity:.1});
+    status('Partida marcada. Contorne a área e volte ao círculo branco.'); updateLive(null); return false;
+  }
+  const last = path[path.length-1];
+  const d = dist(last,pt);
+  if(d < RULES.minStep) return false;
+  let speed = null;
+  if(!sim && pt.t>last.t){
+    speed = d/((pt.t-last.t)/1000)*3.6;
+    if(speed > RULES.maxSpeedKmh){
+      resetLoop(); fail(`Velocidade de ${speed.toFixed(0)} km/h — acima de ${RULES.maxSpeedKmh} km/h a volta não conta. Recomece.`);
+      return false;
+    }
+  }
+  path.push(pt); updateLive(speed);
+  // fechou?
+  if(path.length>=4 && dist(pt,path[0]) <= RULES.closeRadius && pathLength(path) >= RULES.minLoopLength){
+    capture(path.slice(), playTeam); resetLoop(); return true;
+  }
+  if(liveArea() > RULES.maxArea) status(`Atenção: o circuito já passa de ${fmtArea(RULES.maxArea)}. Feche antes ou não vai valer.`,'err');
+  return false;
+}
+
+// ===== GPS =====
+function startGPS(){
+  if(!('geolocation' in navigator)) return fail('Este navegador não tem GPS.');
+  running = true; resetLoop(); $('bMain').textContent='Parar corrida';
+  status('Procurando sinal de GPS…');
+  watchId = navigator.geolocation.watchPosition(pos=>{
+    const {latitude:lat, longitude:lng, accuracy} = pos.coords;
+    if(!lastFix) map.setView([lat,lng],17);
+    lastFix = {lat,lng};
+    if(accuracy > RULES.gpsMaxAccuracy){ status(`Sinal fraco (±${Math.round(accuracy)} m). Aguardando melhorar…`); meMark.setLatLng([lat,lng]); return; }
+    addPoint({lat,lng,t:pos.timestamp});
+  }, err=>{
+    fail(err.code===1 ? 'Permissão de localização negada. Libere nas configurações do navegador.' : 'Não consegui ler o GPS: '+err.message);
+    stopGPS();
+  }, {enableHighAccuracy:true, maximumAge:0, timeout:20000});
+}
+function stopGPS(){
+  running=false; if(watchId!==null) navigator.geolocation.clearWatch(watchId); watchId=null;
+  $('bMain').textContent='Iniciar corrida (GPS)';
+}
+
+// ===== Simulação =====
+map.on('click', e=>{
+  if(!sim) return;
+  addPoint({lat:e.latlng.lat, lng:e.latlng.lng, t:now()});
+});
+
+// ===== Botões =====
+$('bMain').onclick = ()=>{
+  if(sim){ return fail('Saia do modo simulação para usar o GPS.'); }
+  running ? (stopGPS(), resetLoop(), status('Corrida encerrada.')) : startGPS();
+};
+$('bMode').onclick = ()=>{
+  sim = !sim; stopGPS(); resetLoop();
+  document.body.classList.toggle('simmode', sim);
+  $('bMode').classList.toggle('on', sim);
+  $('bMode').textContent = sim ? 'Sair da simulação' : 'Modo simulação';
+  status(sim ? 'Simulação: toque no mapa para andar. Volte perto do primeiro ponto para fechar.' : 'Modo GPS. Toque em "Iniciar corrida".');
+};
+$('bCancel').onclick = ()=>{ resetLoop(); status('Volta cancelada.'); };
+$('bSimTeam').onclick = ()=>{
+  const keys = Object.keys(TEAMS); playTeam = keys[(keys.indexOf(playTeam)+1)%keys.length];
+  setTeamColor(); renderScore(); resetLoop(); status(`Agora jogando como ${TEAMS[playTeam].name} (só na simulação).`);
+};
+$('bDay').onclick = ()=>{
+  state.clockOffset = (state.clockOffset||0) + DAY;
+  const n = expire(); save(); render();
+  const d = Math.round(state.clockOffset/DAY);
+  status(`Relógio adiantado em ${d} dia(s).` + (n ? ` ${n} área(s) expiraram.` : ''));
+};
+$('bInfo').onclick = ()=>$('mInfo').classList.remove('hidden');
+$('bCloseInfo').onclick = ()=>$('mInfo').classList.add('hidden');
+$('rMax').textContent = fmtArea(RULES.maxArea);
+$('rSpeed').textContent = RULES.maxSpeedKmh+' km/h';
+$('rExp').textContent = RULES.expireDays+' dias';
+
+$('teamBtns').innerHTML = Object.entries(TEAMS).map(([k,t])=>`<button data-t="${k}" style="background:${t.color}">${t.name}</button>`).join('');
+$('teamBtns').onclick = e=>{
+  const t = e.target.dataset.t; if(!t) return;
+  state.team = playTeam = t; save(); setTeamColor(); renderScore();
+  $('mTeam').classList.add('hidden');
+  status(`Você é do time ${TEAMS[t].name}. Toque em "Iniciar corrida" ou teste no modo simulação.`);
+};
+
+// ===== Início =====
+expire(); save();
+if(state.team){ $('mTeam').classList.add('hidden'); setTeamColor(); status(`Time ${TEAMS[playTeam].name}. Pronto para correr.`); }
+render();
+window._game = {capture, addPoint, state:()=>state, RULES, setSim:v=>{sim=v}, setTeam:t=>{playTeam=t}};
+</script>
+</body>
+</html>
