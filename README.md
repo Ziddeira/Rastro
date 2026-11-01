@@ -17,6 +17,9 @@ Começo regional: Palhoça e Grande Florianópolis (SC).
 | Roubo de área | o time toma **só a parte que contornou** das áreas rivais |
 | Antitrapaça | acima de **25 km/h** a volta é anulada |
 | Expiração | a área some depois de **7 dias** se o time não passar por lá de novo |
+| Domínio de bairro | o time precisa ter **60%** da área do bairro |
+| Domínio de cidade | o time precisa dominar **mais da metade dos bairros** da cidade |
+| Cidades em jogo | Florianópolis, São José, Palhoça e Biguaçu |
 
 Para mudar os valores, edite o bloco `RULES` no começo do script em `index.html`.
 
@@ -32,6 +35,16 @@ O jogo é um arquivo só (`index.html`). Para o GPS funcionar, a página precisa
 O **modo simulação** permite testar sem sair de casa: toque no mapa para "andar", troque de time para simular rivais e adiante o relógio para ver as áreas expirarem.
 
 > Limitação atual: o território fica salvo só no aparelho de quem joga. O multiplayer (todos vendo o mesmo mapa) é o próximo passo, com servidor compartilhado.
+
+## Mapa, bairros e avisos
+
+- **Mapa base:** [OpenFreeMap](https://openfreemap.org) (grátis, inclusive para uso comercial), mostrando só supermercados, shoppings, postos, hospitais e farmácias. Se o celular não suportar o mapa vetorial, o jogo usa um mapa simples de reserva.
+- **Bairros de Florianópolis e São José:** limites oficiais do IBGE (Censo 2022), em `data/bairros-ibge.json`.
+- **Bairros de Palhoça e Biguaçu:** essas cidades não têm bairros oficiais no IBGE. O jogo monta **bairros aproximados** a partir dos nomes de localidades do OpenStreetMap, na primeira vez que abre.
+- **Limites das cidades:** `data/municipios.json`.
+- **Avisos:** quando um time domina ou perde um bairro ou uma cidade, aparece um aviso na tela (com vibração) e ele fica guardado no botão **Avisos**. Tocar num bairro mostra quanto cada time tem dele.
+
+> Por enquanto os avisos aparecem só no celular de quem fez a conquista. Para todo mundo receber, é preciso o servidor do multiplayer.
 
 ## Marca
 
