@@ -12,7 +12,8 @@ Começo regional: Palhoça e Grande Florianópolis (SC).
 |---|---|
 | Fechar o circuito | voltar a até **30 m** do ponto de partida |
 | Percurso mínimo | 120 m |
-| Área máxima por circuito | **10.000 m²** (mais ou menos um quarteirão) |
+| Área máxima por circuito | **8 km²** (cabe um circuito de 10 km) |
+| Preenchimento ao vivo | durante a corrida a área já aparece pintada e as rivais vão sumindo; só conta ao fechar a volta |
 | Roubo de área | o time toma **só a parte que contornou** das áreas rivais |
 | Antitrapaça | acima de **25 km/h** a volta é anulada |
 | Expiração | a área some depois de **7 dias** se o time não passar por lá de novo |

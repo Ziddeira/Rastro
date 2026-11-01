@@ -24,7 +24,9 @@
   .bottom{position:fixed;left:0;right:0;bottom:0;z-index:1000;padding:0 10px calc(env(safe-area-inset-bottom) + 12px)}
   .live{display:flex;gap:6px;margin-bottom:8px}
   .live div{flex:1;background:var(--card);border-radius:10px;padding:6px;text-align:center;font-size:11px;color:var(--muted)}
-  .live b{display:block;color:var(--txt);font-size:16px}
+  .live b{display:block;color:var(--txt);font-size:15px}
+  .preview-poly{animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{50%{stroke-opacity:.25}}
   .row{display:flex;gap:6px;margin-bottom:6px}
   button{flex:1;border:0;border-radius:12px;padding:13px 8px;font:600 14px Inter,sans-serif;color:#fff;background:#2a2e38}
   button.main{background:var(--team);color:#111;font-weight:800;font-size:16px}
@@ -52,6 +54,7 @@
     <div>Percurso<b id="lDist">0 m</b></div>
     <div>Área do circuito<b id="lArea">0 m²</b></div>
     <div>Velocidade<b id="lSpeed">–</b></div>
+    <div>Tomando<b id="lTake">0 m²</b></div>
   </div>
   <div class="row sim">
     <button id="bSimTeam">Jogar como outro time</button>
@@ -79,7 +82,8 @@
     <h2 style="color:#fff">Regras do protótipo</h2>
     <p class="rules">
     • Comece a correr e volte até <b>30 m do ponto de partida</b>: a área dentro do percurso vira do seu time.<br>
-    • Limite: <b id="rMax"></b> por circuito (um quarteirão). Maior que isso não conta.<br>
+    • Limite: <b id="rMax"></b> por circuito (cabe um circuito de 10 km). Maior que isso não conta.<br>
+    • Enquanto você corre, a área vai sendo pintada ao vivo — e as áreas rivais dentro do circuito somem. Só vale de verdade quando você fecha a volta.<br>
     • Você toma <b>só a parte que contornou</b> das áreas dos outros times.<br>
     • Acima de <b id="rSpeed"></b> a volta é anulada (antitrapaça).<br>
     • Cada área expira em <b id="rExp"></b> se o time não passar por lá de novo.<br>
@@ -93,13 +97,14 @@
 <script>
 // ===== Regras (fácil de ajustar) =====
 const RULES = {
-  maxArea: 10000,        // m² — ~um quarteirão de 100 m x 100 m
+  maxArea: 8000000,      // m² (8 km²) — cabe um circuito de 10 km bem redondo
   maxSpeedKmh: 25,       // acima disso a volta é anulada
   closeRadius: 30,       // m — distância do início para fechar o circuito
   minLoopLength: 120,    // m — percurso mínimo para valer
   expireDays: 7,         // dias até a área sumir
   gpsMaxAccuracy: 35,    // m — ignora leituras de GPS piores que isso
-  minStep: 5             // m — distância mínima entre pontos gravados
+  minStep: 5,            // m — distância mínima entre pontos gravados
+  previewEveryMs: 1500   // com GPS, recalcula o preenchimento ao vivo no máximo a cada 1,5 s
 };
 const TEAMS = {
   vermelho:{name:'Vermelho',color:'#E53935'},
@@ -128,6 +133,8 @@ const save = () => store.set('rastro_v1', state);
 const map = L.map('map',{zoomControl:false,attributionControl:true}).setView(START,16);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const terrLayer = L.layerGroup().addTo(map);
+const previewLayer = L.layerGroup().addTo(map);
+let previewPoly = null, lastPreviewAt = 0;
 const pathLine = L.polyline([], {color:'#fff',weight:4,dashArray:'6 6'}).addTo(map);
 const startMark = L.circle(START,{radius:RULES.closeRadius,color:'#fff',weight:2,fillOpacity:.1}).addTo(map);
 startMark.setStyle({opacity:0,fillOpacity:0});
@@ -136,7 +143,7 @@ const meMark = L.circleMarker(START,{radius:8,color:'#fff',weight:3,fillOpacity:
 // ===== UI helpers =====
 const $ = id => document.getElementById(id);
 function status(msg, kind){ const s=$('status'); s.textContent=msg; s.className='status'+(kind?' '+kind:''); }
-const fmtArea = a => a>=10000 ? (a/10000).toFixed(2).replace('.',',')+' ha' : Math.round(a).toLocaleString('pt-BR')+' m²';
+const fmtArea = a => a>=1e6 ? (a/1e6).toFixed(2).replace('.',',')+' km²' : a>=10000 ? (a/10000).toFixed(1).replace('.',',')+' ha' : Math.round(a).toLocaleString('pt-BR')+' m²';
 const fmtDist = d => d>=1000 ? (d/1000).toFixed(2).replace('.',',')+' km' : Math.round(d)+' m';
 
 function setTeamColor(){
@@ -152,14 +159,34 @@ function expire(){
   state.pieces = state.pieces.filter(p => p.t >= lim);
   return before - state.pieces.length;
 }
+function bboxHit(a,b){ return !(a[2]<b[0]||a[0]>b[2]||a[3]<b[1]||a[1]>b[3]); }
+let liveTaken = 0;
 function render(){
-  terrLayer.clearLayers();
+  terrLayer.clearLayers(); previewLayer.clearLayers();
+  const pv = previewPoly && turf.area(previewPoly) <= RULES.maxArea ? previewPoly : null;
+  const pvBox = pv ? turf.bbox(pv) : null;
+  liveTaken = 0;
   for(const p of state.pieces){
     const age = (now()-p.t)/(RULES.expireDays*DAY);
     const c = TEAMS[p.team].color;
-    L.geoJSON(p.geom,{style:{color:c,weight:2,fillColor:c,fillOpacity:Math.max(.15,.55*(1-age))}})
+    let geom = p.geom;
+    // Durante a corrida: a área rival dentro do circuito some ao vivo (está sendo "consumida")
+    if(pv && p.team!==playTeam && bboxHit(turf.bbox(geom), pvBox)){
+      try{
+        const rest = turf.difference(turf.feature(geom), pv);
+        const before = turf.area(geom);
+        geom = rest ? rest.geometry : null;
+        liveTaken += before - (geom ? turf.area(geom) : 0);
+      }catch(e){}
+      if(!geom) continue;
+    }
+    L.geoJSON(geom,{style:{color:c,weight:2,fillColor:c,fillOpacity:Math.max(.15,.55*(1-age))}})
       .bindPopup(`Time ${TEAMS[p.team].name}<br>${fmtArea(turf.area(p.geom))}<br>Expira em ${Math.max(0,Math.ceil(RULES.expireDays-(now()-p.t)/DAY))} dia(s)`)
       .addTo(terrLayer);
+  }
+  if(previewPoly){
+    const ok = !!pv, c = ok ? TEAMS[playTeam].color : '#ff4d4d';
+    L.geoJSON(previewPoly,{interactive:false,style:{className:'preview-poly',color:c,weight:3,dashArray:ok?null:'8 6',fillColor:c,fillOpacity:ok?.4:.12}}).addTo(previewLayer);
   }
   renderScore();
 }
@@ -174,6 +201,7 @@ function renderScore(){
 function loopToPolygon(pts){
   const ring = pts.map(p=>[p.lng,p.lat]); ring.push(ring[0]);
   let poly = turf.polygon([ring]);
+  if(pts.length > 60) poly = turf.simplify(poly,{tolerance:0.00002,highQuality:false}); // ~2 m: menos pontos, conta mais rápida
   if(turf.kinks(poly).features.length){
     const parts = turf.unkinkPolygon(poly).features;
     poly = parts.reduce((acc,f)=> acc ? (turf.union(acc,f)||acc) : f, null);
@@ -212,12 +240,20 @@ function fail(msg){ status(msg,'err'); return false; }
 // ===== Percurso =====
 function dist(a,b){ return turf.distance([a.lng,a.lat],[b.lng,b.lat],{units:'meters'}); }
 function pathLength(pts){ let d=0; for(let i=1;i<pts.length;i++) d+=dist(pts[i-1],pts[i]); return d; }
-function liveArea(){
-  if(path.length<3) return 0;
-  try{ return turf.area(loopToPolygon(path)); }catch(e){ return 0; }
+function liveArea(){ return previewPoly ? turf.area(previewPoly) : 0; }
+function updatePreview(force){
+  const t = Date.now();
+  if(!force && !sim && t-lastPreviewAt < RULES.previewEveryMs) return;
+  lastPreviewAt = t;
+  previewPoly = null;
+  if(path.length>=3){ try{ previewPoly = loopToPolygon(path); }catch(e){} }
+  render();
+  $('lTake').textContent = fmtArea(liveTaken);
+  $('lTake').style.color = liveTaken>1 ? '#7CFC9A' : '';
 }
 function updateLive(speed){
   $('lDist').textContent = fmtDist(pathLength(path));
+  updatePreview(path.length<3);
   const a = liveArea();
   $('lArea').textContent = fmtArea(a);
   $('lArea').style.color = a>RULES.maxArea ? '#ff6b6b' : '';
@@ -225,7 +261,7 @@ function updateLive(speed){
   pathLine.setLatLngs(path.map(p=>[p.lat,p.lng]));
 }
 function resetLoop(){
-  path=[]; pathLine.setLatLngs([]); startMark.setStyle({opacity:0,fillOpacity:0}); updateLive(null);
+  path=[]; previewPoly=null; liveTaken=0; $('lTake').textContent='0 m²'; $('lTake').style.color=''; pathLine.setLatLngs([]); render(); startMark.setStyle({opacity:0,fillOpacity:0}); updateLive(null);
 }
 
 // Recebe um ponto (do GPS ou da simulação). Retorna true se fechou o circuito.
@@ -249,7 +285,7 @@ function addPoint(pt){
   path.push(pt); updateLive(speed);
   // fechou?
   if(path.length>=4 && dist(pt,path[0]) <= RULES.closeRadius && pathLength(path) >= RULES.minLoopLength){
-    capture(path.slice(), playTeam); resetLoop(); return true;
+    const done = path.slice(); previewPoly = null; capture(done, playTeam); resetLoop(); return true;
   }
   if(liveArea() > RULES.maxArea) status(`Atenção: o circuito já passa de ${fmtArea(RULES.maxArea)}. Feche antes ou não vai valer.`,'err');
   return false;
